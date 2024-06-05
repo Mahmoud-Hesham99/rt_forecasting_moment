@@ -82,7 +82,6 @@ def run_training(
                 data_schema=data_schema,
                 train_data=validated_data,
                 hyperparameters=default_hyperparameters,
-                model_dir_path=predictor_dir_path,
             )
 
         # save predictor model

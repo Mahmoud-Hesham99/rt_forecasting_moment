@@ -1,6 +1,6 @@
 {
-  "use_static_features": false,
+  "use_static_covariates": false,
   "use_future_covariates": false,
   "use_past_covariates": false,
-  "random_state": 0
+  "random_state": 42
 }
