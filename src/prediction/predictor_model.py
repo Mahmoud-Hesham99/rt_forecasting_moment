@@ -13,8 +13,8 @@ import torch
 import torch.cuda.amp
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import OneCycleLR
-from tqdm import tqdm    
-import random 
+from tqdm import tqdm
+import random
 
 warnings.filterwarnings("ignore")
 
@@ -24,6 +24,13 @@ MODEL_FOLDER_NAME = "model_bin"
 
 logger = get_logger(task_name="model")
 
+device = torch.device(
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
+
+
 def control_randomness(seed: int = 42):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -32,6 +39,7 @@ def control_randomness(seed: int = 42):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
 
 class Forecaster:
     """A wrapper class for the MOMENT Forecaster.
@@ -45,11 +53,11 @@ class Forecaster:
     def __init__(
         self,
         data_schema: ForecastingSchema,
-        use_static_covariates: bool = False,   
-        use_future_covariates: bool = False,  
+        use_static_covariates: bool = False,
+        use_future_covariates: bool = False,
         use_past_covariates: bool = False,
+        max_windows: int = 10000,
         random_state: int = 0,
-
         **kwargs,
     ):
         """Construct a new MOMENT Forecaster
@@ -69,14 +77,18 @@ class Forecaster:
             use_past_covariates (bool):
                 Whether the model should use past covariates if available.
 
+            max_windows (int): The maximum number of windows to use for training.
+
             **kwargs:
                 Optional arguments.
         """
         self.data_schema = data_schema
         self.random_state = random_state
-        self.dataset = ForecastingDataset(forecast_horizon=self.data_schema.forecast_length,
-                                          random_seed=self.random_state)
-        
+        self.dataset = ForecastingDataset(
+            forecast_horizon=self.data_schema.forecast_length,
+            random_seed=self.random_state,
+        )
+
         self.use_static_covariates = use_static_covariates and (
             len(data_schema.static_covariates) > 0
         )
@@ -87,6 +99,7 @@ class Forecaster:
             len(data_schema.future_covariates) > 0
             or self.data_schema.time_col_dtype in ["DATE", "DATETIME"]
         )
+        self.max_windows = max_windows
 
         self.kwargs = kwargs
         self._is_trained = False
@@ -97,41 +110,51 @@ class Forecaster:
         cols_to_drop = []
 
         cols_to_drop += [self.data_schema.time_col]
-        
-        if not self.use_past_covariates and set(self.data_schema.past_covariates).issubset(data.columns):
+
+        if not self.use_past_covariates and set(
+            self.data_schema.past_covariates
+        ).issubset(data.columns):
             cols_to_drop += self.data_schema.past_covariates
 
-        if not self.use_future_covariates and set(self.data_schema.future_covariates).issubset(data.columns):
+        if not self.use_future_covariates and set(
+            self.data_schema.future_covariates
+        ).issubset(data.columns):
             cols_to_drop += self.data_schema.future_covariates
 
-        if not self.use_static_covariates and set(self.data_schema.static_covariates).issubset(data.columns):
+        if not self.use_static_covariates and set(
+            self.data_schema.static_covariates
+        ).issubset(data.columns):
             cols_to_drop += self.data_schema.static_covariates
 
         data_features = data.drop(columns=cols_to_drop)
 
         grouped = data_features.groupby(self.data_schema.id_col)
         target_index = data_features.columns.get_loc(self.data_schema.target)
-        self.dataset.set_target_index(target_index-1)
+        self.dataset.set_target_index(target_index - 1)
 
         for id, df in grouped:
             df_features = df.drop(columns=[self.data_schema.id_col])
             self.scaler[str(id)] = StandardScaler()
             self.scaler[str(id)].fit(df_features.values)
             df_features_scaled = self.scaler[str(id)].transform(df_features.values)
-            self.dataset.extend_to_windows(series_id=str(id),data=df_features_scaled)
+            self.dataset.extend_to_windows(series_id=str(id), data=df_features_scaled)
+
+        indicies = [i for i in range(len(self.dataset.timeseries))]
+        shuffled = random.sample(indicies, len(indicies))[: self.max_windows]
+
+        self.dataset.timeseries = list(np.array(self.dataset.timeseries)[shuffled])
+        self.dataset.forecast = list(np.array(self.dataset.forecast)[shuffled])
+        self.dataset.input_mask = list(np.array(self.dataset.input_mask)[shuffled])
 
     def _finetune_head(self):
-
         # Load data
         train_loader = DataLoader(self.dataset, batch_size=8, shuffle=True)
         criterion = torch.nn.MSELoss()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
         min_iter = 50
         cur_epoch = 0
-        max_epoch = min_iter//len(train_loader) if len(train_loader) < min_iter else 1
+        max_epoch = min_iter // len(train_loader) if len(train_loader) < min_iter else 3
 
         # Move the model to the GPU
         self.model = self.model.to(device)
@@ -145,22 +168,26 @@ class Forecaster:
         # Create a OneCycleLR scheduler
         max_lr = 1e-4
         total_steps = len(train_loader) * max_epoch
-        scheduler = OneCycleLR(optimizer, max_lr=max_lr, total_steps=total_steps, pct_start=0.3)
+        scheduler = OneCycleLR(
+            optimizer, max_lr=max_lr, total_steps=total_steps, pct_start=0.3
+        )
 
         # Gradient clipping value
         max_norm = 5.0
         self.model.train()
         while cur_epoch < max_epoch:
             losses = []
-            for timeseries, forecast, input_mask in tqdm(train_loader, total=len(train_loader)):
+            for timeseries, forecast, input_mask in tqdm(
+                train_loader, total=len(train_loader)
+            ):
                 # Move the data to the GPU
                 timeseries = timeseries.float().to(device)
-                input_mask = input_mask.to(device)
+                input_mask = input_mask.to(torch.float32).to(device)
                 forecast = forecast.float().to(device)
 
                 with torch.cuda.amp.autocast():
                     output = self.model(timeseries, input_mask)
-                
+
                 loss = criterion(output.forecast, forecast)
 
                 # Scales the loss for mixed precision training
@@ -183,10 +210,8 @@ class Forecaster:
             # Step the learning rate scheduler
             scheduler.step()
             cur_epoch += 1
-            
-            self.model.eval()
-            
 
+            self.model.eval()
 
     def fit(
         self,
@@ -203,16 +228,17 @@ class Forecaster:
         self.model = MOMENTPipeline.from_pretrained(
             "AutonLab/MOMENT-1-large",
             model_kwargs={
-                'task_name': 'forecasting',
-                'forecast_horizon': self.data_schema.forecast_length,
-                'head_dropout': 0.1,
-                'weight_decay': 0,
-                'freeze_encoder': True,  # Freeze the patch embedding layer
-                'freeze_embedder': True,  # Freeze the transformer encoder
-                'freeze_head': False,  # The linear forecasting head must be trained
+                "task_name": "forecasting",
+                "forecast_horizon": self.data_schema.forecast_length,
+                "head_dropout": 0.1,
+                "weight_decay": 0,
+                "freeze_encoder": True,  # Freeze the patch embedding layer
+                "freeze_embedder": True,  # Freeze the transformer encoder
+                "freeze_head": False,  # The linear forecasting head must be trained
             },
         )
         self.model.init()
+        self.model = self.model.to(device)
         self._finetune_head()
         self.dataset._clear_train()
         self._is_trained = True
@@ -232,9 +258,15 @@ class Forecaster:
 
         res = []
         for id, df in test_data.groupby(self.data_schema.id_col, sort=False):
-            test = torch.from_numpy(self.dataset.test[str(id)][None,:,:].astype(np.float32))
+            test = torch.from_numpy(
+                self.dataset.test[str(id)][None, :, :].astype(np.float32)
+            ).to(device)
+            self.model = self.model.to(device)
+
             pred = self.model(test)
-            pred_reverse_scaled = self.scaler[str(id)].inverse_transform(np.squeeze(pred.forecast.detach().cpu().numpy(),axis=0))
+            pred_reverse_scaled = self.scaler[str(id)].inverse_transform(
+                np.squeeze(pred.forecast.detach().cpu().numpy(), axis=0)
+            )
             target_res = pred_reverse_scaled[self.dataset.target_index]
             res += list(target_res)
         test_data[prediction_col_name] = res
@@ -248,12 +280,12 @@ class Forecaster:
         """
         if not self._is_trained:
             raise NotFittedError("Model is not fitted yet.")
-        
+
         joblib.dump(self, os.path.join(model_dir_path, PREDICTOR_FILE_NAME))
         # self.model.save_pretrained(os.path.join(model_dir_path, MODEL_FOLDER_NAME))
         # joblib.dump(self.model.config, os.path.join(model_dir_path, MODEL_FOLDER_NAME, 'model_config.pkl'))
 
-    @ classmethod
+    @classmethod
     def load(cls, model_dir_path: str) -> "Forecaster":
         """Load the Forecaster from disk.
 
@@ -262,8 +294,7 @@ class Forecaster:
         Returns:
             Forecaster: A new instance of the loaded Forecaster.
         """
-        forecaster = joblib.load(os.path.join(
-            model_dir_path, PREDICTOR_FILE_NAME))
+        forecaster = joblib.load(os.path.join(model_dir_path, PREDICTOR_FILE_NAME))
 
         # model_config = joblib.load(os.path.join(model_dir_path, MODEL_FOLDER_NAME, 'model_config.pkl'))
         # forecaster.model = MOMENTPipeline.from_pretrained(os.path.join(model_dir_path, MODEL_FOLDER_NAME), config = model_config)

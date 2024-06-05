@@ -1,6 +1,7 @@
 {
   "use_static_covariates": false,
-  "use_future_covariates": false,
+  "use_future_covariates": true,
   "use_past_covariates": false,
+  "max_windows":10000,
   "random_state": 42
 }
