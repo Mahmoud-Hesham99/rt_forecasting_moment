@@ -16,6 +16,8 @@ class ForecastingDataset (Dataset):
         self.timeseries = []
         self.forecast = []
         self.input_mask = []
+        self.test = {}
+        self.target_index = 0
 
 
     def __getitem__(self, index):
@@ -24,7 +26,7 @@ class ForecastingDataset (Dataset):
     def __len__(self):
         return len(self.timeseries)
 
-    def extend_to_windows(self, data:np.ndarray):
+    def extend_to_windows(self, series_id:str, data:np.ndarray):
         num_points = data.shape[0]
 
         if num_points < self.forecast_horizon:
@@ -48,6 +50,8 @@ class ForecastingDataset (Dataset):
             self.timeseries.append(timeseries_window)
             self.forecast.append(forecast_window)
             self.input_mask.append(input_mask_window[:-self.forecast_horizon])  # The input mask should match the timeseries length
+            
+            self.test[series_id] = timeseries_window
             return
         
         for start in range(0, num_points - self.seq_len - self.forecast_horizon + 1, self.data_stride_len):
@@ -63,6 +67,16 @@ class ForecastingDataset (Dataset):
             self.timeseries.append(timeseries_window)
             self.forecast.append(forecast_window)
             self.input_mask.append(input_mask_window)
+
+        self.test[series_id] = self.timeseries[-1]
+
+    def _clear_train(self):
+        self.timeseries = None
+        self.forecast = None
+        self.input_mask = None
+
+    def set_target_index(self, i):
+        self.target_index = i
 
 
 if __name__ == "__main__":
@@ -84,3 +98,5 @@ if __name__ == "__main__":
     print(f"Timeseries shape: {timeseries.shape}")
     print(f"Forecast shape: {forecast.shape}")
     print(f"Input mask shape: {input_mask.shape}")
+
+

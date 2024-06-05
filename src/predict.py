@@ -107,7 +107,7 @@ def run_batch_predictions(
             # validate the data
             logger.info("Validating prediction data...")
             validated_test_data = validate_data(
-                data=test_data, data_schema=data_schema, is_train=True
+                data=test_data, data_schema=data_schema, is_train=False
             )
 
             logger.info("Loading predictor model...")
@@ -116,7 +116,7 @@ def run_batch_predictions(
             logger.info("Making predictions...")
             predictions = predict_with_model(
                 model=predictor_model,
-                train_data=validated_test_data,
+                test_data=validated_test_data,
                 prediction_col_name=model_config["prediction_field_name"],
             )
             logger.info("Validating predictions...")

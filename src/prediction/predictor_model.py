@@ -107,16 +107,18 @@ class Forecaster:
         if not self.use_static_covariates and set(self.data_schema.static_covariates).issubset(data.columns):
             cols_to_drop += self.data_schema.static_covariates
 
-        data = data.drop(columns=cols_to_drop)
+        data_features = data.drop(columns=cols_to_drop)
 
-        grouped = data.groupby(self.data_schema.id_col)
+        grouped = data_features.groupby(self.data_schema.id_col)
+        target_index = data_features.columns.get_loc(self.data_schema.target)
+        self.dataset.set_target_index(target_index-1)
 
         for id, df in grouped:
             df_features = df.drop(columns=[self.data_schema.id_col])
             self.scaler[str(id)] = StandardScaler()
             self.scaler[str(id)].fit(df_features.values)
             df_features_scaled = self.scaler[str(id)].transform(df_features.values)
-            self.dataset.extend_to_windows(df_features_scaled)
+            self.dataset.extend_to_windows(series_id=str(id),data=df_features_scaled)
 
     def _finetune_head(self):
 
@@ -127,8 +129,9 @@ class Forecaster:
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        min_iter = 50
         cur_epoch = 0
-        max_epoch = 1
+        max_epoch = min_iter//len(train_loader) if len(train_loader) < min_iter else 1
 
         # Move the model to the GPU
         self.model = self.model.to(device)
@@ -146,7 +149,7 @@ class Forecaster:
 
         # Gradient clipping value
         max_norm = 5.0
-
+        self.model.train()
         while cur_epoch < max_epoch:
             losses = []
             for timeseries, forecast, input_mask in tqdm(train_loader, total=len(train_loader)):
@@ -182,7 +185,7 @@ class Forecaster:
             cur_epoch += 1
             
             self.model.eval()
-            self.model.train()
+            
 
 
     def fit(
@@ -211,6 +214,7 @@ class Forecaster:
         )
         self.model.init()
         self._finetune_head()
+        self.dataset._clear_train()
         self._is_trained = True
 
     def predict(
@@ -226,23 +230,15 @@ class Forecaster:
         if not self._is_trained:
             raise NotFittedError("Model is not fitted yet.")
 
-        prepared_data = self._prepare_data(test_data)
-        predictions = self.model.predict(data=prepared_data, use_cache=False)
-        predictions.reset_index(inplace=True)
-
-        predictions = predictions.rename(columns={"item_id": self.data_schema.id_col,
-                                                  "timestamp": self.data_schema.time_col,
-                                                  "mean": prediction_col_name})
-
-        if self.data_schema.time_col_dtype in ["INT", "OTHER"]:
-            last_timestamp = test_data[self.data_schema.time_col].max()
-            new_timestamps = np.arange(
-                last_timestamp + 1, last_timestamp + 1 + self.data_schema.forecast_length
-            )
-            predictions[self.data_schema.time_col] = np.tile(
-                new_timestamps, predictions[self.data_schema.id_col].nunique())
-
-        return predictions[[self.data_schema.id_col, self.data_schema.time_col, prediction_col_name]]
+        res = []
+        for id, df in test_data.groupby(self.data_schema.id_col, sort=False):
+            test = torch.from_numpy(self.dataset.test[str(id)][None,:,:].astype(np.float32))
+            pred = self.model(test)
+            pred_reverse_scaled = self.scaler[str(id)].inverse_transform(np.squeeze(pred.forecast.detach().cpu().numpy(),axis=0))
+            target_res = pred_reverse_scaled[self.dataset.target_index]
+            res += list(target_res)
+        test_data[prediction_col_name] = res
+        return test_data
 
     def save(self, model_dir_path: str) -> None:
         """Save the Forecaster to disk.
@@ -253,9 +249,9 @@ class Forecaster:
         if not self._is_trained:
             raise NotFittedError("Model is not fitted yet.")
         
-        # joblib.dump(self, os.path.join(model_dir_path, PREDICTOR_FILE_NAME))
-        self.model.save_pretrained(os.path.join(model_dir_path, MODEL_FOLDER_NAME))
-        joblib.dump(self.model.config, os.path.join(model_dir_path, MODEL_FOLDER_NAME, 'model_config.pkl'))
+        joblib.dump(self, os.path.join(model_dir_path, PREDICTOR_FILE_NAME))
+        # self.model.save_pretrained(os.path.join(model_dir_path, MODEL_FOLDER_NAME))
+        # joblib.dump(self.model.config, os.path.join(model_dir_path, MODEL_FOLDER_NAME, 'model_config.pkl'))
 
     @ classmethod
     def load(cls, model_dir_path: str) -> "Forecaster":
@@ -269,8 +265,8 @@ class Forecaster:
         forecaster = joblib.load(os.path.join(
             model_dir_path, PREDICTOR_FILE_NAME))
 
-        model_config = joblib.load(os.path.join(model_dir_path, MODEL_FOLDER_NAME, 'model_config.pkl'))
-        forecaster.model = MOMENTPipeline.from_pretrained(os.path.join(model_dir_path, MODEL_FOLDER_NAME), config = model_config)
+        # model_config = joblib.load(os.path.join(model_dir_path, MODEL_FOLDER_NAME, 'model_config.pkl'))
+        # forecaster.model = MOMENTPipeline.from_pretrained(os.path.join(model_dir_path, MODEL_FOLDER_NAME), config = model_config)
         return forecaster
 
     def __str__(self):
@@ -303,20 +299,20 @@ def train_predictor_model(
 
 
 def predict_with_model(
-    model: Forecaster, train_data: pd.DataFrame, prediction_col_name: str
+    model: Forecaster, test_data: pd.DataFrame, prediction_col_name: str
 ) -> pd.DataFrame:
     """
     Make forecast.
 
     Args:
         model (Forecaster): The Forecaster model.
-        train_data (pd.DataFrame): The train input data for forecasting used to do prediction.
+        test_data (pd.DataFrame): The test input data for forecasting used to do prediction.
         prediction_col_name (int): Name to give to prediction column.
 
     Returns:
         pd.DataFrame: The forecast.
     """
-    return model.predict(train_data, prediction_col_name)
+    return model.predict(test_data, prediction_col_name)
 
 
 def save_predictor_model(model: Forecaster, predictor_dir_path: str) -> None:
