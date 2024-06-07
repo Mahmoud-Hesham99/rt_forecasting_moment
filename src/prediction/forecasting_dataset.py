@@ -29,7 +29,6 @@ class ForecastingDataset(Dataset):
 
     def extend_to_windows(self, series_id: str, data: np.ndarray):
         num_points = data.shape[0]
-
         if num_points < self.forecast_horizon:
             # If data is less than forecast_horizon, we cannot create a valid window
             return
@@ -56,7 +55,7 @@ class ForecastingDataset(Dataset):
                 input_mask_window[: -self.forecast_horizon]
             )  # The input mask should match the timeseries length
 
-            self.test[series_id] = timeseries_window
+            self.test[series_id] = padded_data[-self.seq_len:].T
             return
 
         for start in range(
@@ -77,7 +76,7 @@ class ForecastingDataset(Dataset):
             self.forecast.append(forecast_window)
             self.input_mask.append(input_mask_window)
 
-        self.test[series_id] = self.timeseries[-1]
+        self.test[series_id] = data[-self.seq_len:, :].T
 
     def _clear_train(self):
         self.timeseries = None
@@ -90,7 +89,7 @@ class ForecastingDataset(Dataset):
 
 if __name__ == "__main__":
     # Simulated data example
-    data = np.random.rand(25, 1)  # 10,000 time steps with 10 features each
+    data = np.random.rand(25, 1) 
 
     # Initialize dataset
     dataset = ForecastingDataset(forecast_horizon=24, data_stride_len=1)

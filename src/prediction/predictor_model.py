@@ -53,10 +53,10 @@ class Forecaster:
     def __init__(
         self,
         data_schema: ForecastingSchema,
-        use_static_covariates: bool = False,
         use_future_covariates: bool = False,
-        use_past_covariates: bool = False,
         max_windows: int = 10000,
+        learning_rate: float = 1e-4,
+        max_epoch: int = 3,
         random_state: int = 0,
         **kwargs,
     ):
@@ -67,23 +67,28 @@ class Forecaster:
             data_schema (ForecastingSchema):
                 The schema of the data.
 
-
-            use_static_covariates (bool):
-                Whether the model should use static features if available.
-
             use_future_covariates (bool):
                 Whether the model should use future covariates if available.
 
-            use_past_covariates (bool):
-                Whether the model should use past covariates if available.
-
             max_windows (int): The maximum number of windows to use for training.
+
+            learning_rate (float): The learning rate for finetuning the construction head.
+
+            max_epoch (int): The max number of epochs to use for training.
 
             **kwargs:
                 Optional arguments.
         """
         self.data_schema = data_schema
+        self.max_windows = max_windows
+        self.learning_rate = learning_rate
+        self.max_epoch = max_epoch
         self.random_state = random_state
+
+        # not supported for MOMENT and future covatiates are considered as just features
+        use_static_covariates = False,
+        use_past_covariates = False,
+
         self.dataset = ForecastingDataset(
             forecast_horizon=self.data_schema.forecast_length,
             random_seed=self.random_state,
@@ -99,7 +104,6 @@ class Forecaster:
             len(data_schema.future_covariates) > 0
             or self.data_schema.time_col_dtype in ["DATE", "DATETIME"]
         )
-        self.max_windows = max_windows
 
         self.kwargs = kwargs
         self._is_trained = False
@@ -150,11 +154,11 @@ class Forecaster:
         # Load data
         train_loader = DataLoader(self.dataset, batch_size=8, shuffle=True)
         criterion = torch.nn.MSELoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         min_iter = 50
         cur_epoch = 0
-        max_epoch = min_iter // len(train_loader) if len(train_loader) < min_iter else 3
+        max_epoch = min_iter // len(train_loader) if len(train_loader) < min_iter else self.max_epoch
 
         # Move the model to the GPU
         self.model = self.model.to(device)
