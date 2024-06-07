@@ -53,7 +53,8 @@ class Forecaster:
     def __init__(
         self,
         data_schema: ForecastingSchema,
-        use_future_covariates: bool = False,
+        use_static_covariates:bool = True,
+        use_future_covariates: bool = True,
         max_windows: int = 10000,
         learning_rate: float = 1e-4,
         max_epoch: int = 3,
@@ -66,6 +67,9 @@ class Forecaster:
 
             data_schema (ForecastingSchema):
                 The schema of the data.
+
+            use_static_covariates (bool):
+                Whether the model should use static covariates if available.
 
             use_future_covariates (bool):
                 Whether the model should use future covariates if available.
@@ -85,8 +89,7 @@ class Forecaster:
         self.max_epoch = max_epoch
         self.random_state = random_state
 
-        # not supported for MOMENT and future covatiates are considered as just features
-        use_static_covariates = False,
+        # not supported for MOMENT and future and static covatiates are considered as just features
         use_past_covariates = False,
 
         self.dataset = ForecastingDataset(
