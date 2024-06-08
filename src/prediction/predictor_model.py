@@ -269,13 +269,13 @@ class Forecaster:
                 self.dataset.test[str(id)][None, :, :].astype(np.float32)
             ).to(device)
             self.model = self.model.to(device)
-
             pred = self.model(test)
             pred_reverse_scaled = self.scaler[str(id)].inverse_transform(
-                np.squeeze(pred.forecast.detach().cpu().numpy(), axis=0)
-            )
+                np.squeeze(pred.forecast.detach().cpu().numpy(), axis=0).T
+            ).T
             target_res = pred_reverse_scaled[self.dataset.target_index]
-            res += list(target_res)
+            res.extend(list(target_res))
+
         test_data[prediction_col_name] = res
         return test_data
 
