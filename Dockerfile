@@ -1,24 +1,33 @@
 FROM nvidia/cuda:12.2.0-runtime-ubuntu20.04 as builder
 
-
-RUN apt-get -y update && apt-get install -y --no-install-recommends \
+# Update and install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     dos2unix \
-    git \
+    software-properties-common \
     && rm -rf /var/lib/apt/lists/*
 
-# install python and pip and add symbolic link to python3
-RUN apt-get -y update && apt-get install -y --no-install-recommends \
-    python3.9 \
+# Add deadsnakes PPA for newer Python versions
+RUN add-apt-repository ppa:deadsnakes/ppa
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3.10-distutils \
     python3-pip \
+    git \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/bin/python3 /usr/bin/python
+    && ln -sf /usr/bin/python3.10 /usr/bin/python \
+    && ln -sf /usr/bin/python3.10 /usr/bin/python3
 
-RUN pip3 install --upgrade pip
+RUN apt-get update && apt-get install -y --no-install-recommends \
+curl \
+&& rm -rf /var/lib/apt/lists/* \
+&& curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py \
+&& python3.10 get-pip.py \
+&& rm get-pip.py
 
+# Copy the Python dependencies file and install dependencies
 COPY ./requirements.txt .
-RUN pip3 install -r requirements.txt 
-
+RUN python3.10 -m pip install -r requirements.txt
 
 COPY src ./opt/src
 
