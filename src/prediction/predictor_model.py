@@ -57,6 +57,7 @@ class Forecaster:
         use_future_covariates: bool = True,
         max_windows: int = 10000,
         learning_rate: float = 1e-4,
+        min_iter: int = 50,
         max_epoch: int = 3,
         random_state: int = 0,
         **kwargs,
@@ -78,6 +79,8 @@ class Forecaster:
 
             learning_rate (float): The learning rate for finetuning the construction head.
 
+            min_iter (int): Min number of iteration for finetuning the construction head.
+
             max_epoch (int): The max number of epochs to use for training.
 
             **kwargs:
@@ -86,6 +89,7 @@ class Forecaster:
         self.data_schema = data_schema
         self.max_windows = max_windows
         self.learning_rate = learning_rate
+        self.min_iter = min_iter
         self.max_epoch = max_epoch
         self.random_state = random_state
 
@@ -159,7 +163,7 @@ class Forecaster:
         criterion = torch.nn.MSELoss()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
-        min_iter = 50
+        min_iter = self.min_iter
         cur_epoch = 0
         max_epoch = min_iter // len(train_loader) if len(train_loader) < min_iter else self.max_epoch
 
