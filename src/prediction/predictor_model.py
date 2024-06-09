@@ -55,10 +55,6 @@ class Forecaster:
         data_schema: ForecastingSchema,
         use_static_covariates:bool = True,
         use_future_covariates: bool = True,
-        max_windows: int = 10000,
-        learning_rate: float = 1e-4,
-        min_iter: int = 50,
-        max_epoch: int = 3,
         random_state: int = 0,
         **kwargs,
     ):
@@ -75,22 +71,10 @@ class Forecaster:
             use_future_covariates (bool):
                 Whether the model should use future covariates if available.
 
-            max_windows (int): The maximum number of windows to use for training.
-
-            learning_rate (float): The learning rate for finetuning the construction head.
-
-            min_iter (int): Min number of iteration for finetuning the construction head.
-
-            max_epoch (int): The max number of epochs to use for training.
-
-            **kwargs:
+                            **kwargs:
                 Optional arguments.
         """
         self.data_schema = data_schema
-        self.max_windows = max_windows
-        self.learning_rate = learning_rate
-        self.min_iter = min_iter
-        self.max_epoch = max_epoch
         self.random_state = random_state
 
         # not supported for MOMENT and future and static covatiates are considered as just features
@@ -150,80 +134,6 @@ class Forecaster:
             df_features_scaled = self.scaler[str(id)].transform(df_features.values)
             self.dataset.extend_to_windows(series_id=str(id), data=df_features_scaled)
 
-        indicies = [i for i in range(len(self.dataset.timeseries))]
-        shuffled = random.sample(indicies, len(indicies))[: self.max_windows]
-
-        self.dataset.timeseries = list(np.array(self.dataset.timeseries)[shuffled])
-        self.dataset.forecast = list(np.array(self.dataset.forecast)[shuffled])
-        self.dataset.input_mask = list(np.array(self.dataset.input_mask)[shuffled])
-
-    def _finetune_head(self):
-        # Load data
-        train_loader = DataLoader(self.dataset, batch_size=8, shuffle=True)
-        criterion = torch.nn.MSELoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
-
-        min_iter = self.min_iter
-        cur_epoch = 0
-        max_epoch = min_iter // len(train_loader) if len(train_loader) < min_iter else self.max_epoch
-
-        # Move the model to the GPU
-        self.model = self.model.to(device)
-
-        # Move the loss function to the GPU
-        criterion = criterion.to(device)
-
-        # Enable mixed precision training
-        scaler = torch.cuda.amp.GradScaler()
-
-        # Create a OneCycleLR scheduler
-        max_lr = 1e-4
-        total_steps = len(train_loader) * max_epoch
-        scheduler = OneCycleLR(
-            optimizer, max_lr=max_lr, total_steps=total_steps, pct_start=0.3
-        )
-
-        # Gradient clipping value
-        max_norm = 5.0
-        self.model.train()
-        while cur_epoch < max_epoch:
-            losses = []
-            for timeseries, forecast, input_mask in tqdm(
-                train_loader, total=len(train_loader)
-            ):
-                # Move the data to the GPU
-                timeseries = timeseries.float().to(device)
-                input_mask = input_mask.to(torch.float32).to(device)
-                forecast = forecast.float().to(device)
-
-                with torch.cuda.amp.autocast():
-                    output = self.model(timeseries, input_mask)
-
-                loss = criterion(output.forecast, forecast)
-
-                # Scales the loss for mixed precision training
-                scaler.scale(loss).backward()
-
-                # Clip gradients
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
-
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-
-                losses.append(loss.item())
-
-            losses = np.array(losses)
-            average_loss = np.average(losses)
-            print(f"Epoch {cur_epoch}: Train loss: {average_loss:.3f}")
-
-            # Step the learning rate scheduler
-            scheduler.step()
-            cur_epoch += 1
-
-            self.model.eval()
-
     def fit(
         self,
         train_data: pd.DataFrame,
@@ -250,8 +160,6 @@ class Forecaster:
         )
         self.model.init()
         self.model = self.model.to(device)
-        self._finetune_head()
-        self.dataset._clear_train()
         self._is_trained = True
 
     def predict(

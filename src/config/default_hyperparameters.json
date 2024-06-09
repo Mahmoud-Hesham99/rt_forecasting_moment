@@ -1,9 +1,5 @@
 {
   "use_static_covariates": true,
   "use_future_covariates": true,
-  "max_windows":10000,
-  "learning_rate": 1e-4,
-  "min_iter" : 50,
-  "max_epoch": 3,
   "random_state": 42
 }

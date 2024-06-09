@@ -15,9 +15,6 @@ class ForecastingDataset(Dataset):
         self.seq_len = 512  # fixed for MOMENT model
         self.forecast_horizon = forecast_horizon
         self.data_stride_len = data_stride_len
-        self.timeseries = []
-        self.forecast = []
-        self.input_mask = []
         self.test = {}
         self.target_index = 0
 
@@ -40,48 +37,12 @@ class ForecastingDataset(Dataset):
             padding = np.zeros((padding_length, data.shape[1]))
             padded_data = np.vstack((padding, data))
 
-            # Create a single window
-            timeseries_window = padded_data[: -self.forecast_horizon].T
-            forecast_window = padded_data[-self.forecast_horizon :].T
-            input_mask_window = np.zeros(self.seq_len + self.forecast_horizon)
-            input_mask_window[
-                padding_length : padding_length + num_points - self.forecast_horizon
-            ] = 1
-            input_mask_window[-self.forecast_horizon :] = 1
-
-            self.timeseries.append(timeseries_window)
-            self.forecast.append(forecast_window)
-            self.input_mask.append(
-                input_mask_window[: -self.forecast_horizon]
-            )  # The input mask should match the timeseries length
-
             self.test[series_id] = padded_data[-self.seq_len:].T
             return
 
-        for start in range(
-            0,
-            num_points - self.seq_len - self.forecast_horizon + 1,
-            self.data_stride_len,
-        ):
-            end = start + self.seq_len
-            forecast_end = end + self.forecast_horizon
-
-            # Create windows
-            timeseries_window = data[start:end, :].T
-            forecast_window = data[end:forecast_end, :].T
-            input_mask_window = np.ones(self.seq_len)
-
-            # Append to lists
-            self.timeseries.append(timeseries_window)
-            self.forecast.append(forecast_window)
-            self.input_mask.append(input_mask_window)
-
+        
         self.test[series_id] = data[-self.seq_len:, :].T
 
-    def _clear_train(self):
-        self.timeseries = None
-        self.forecast = None
-        self.input_mask = None
 
     def set_target_index(self, i):
         self.target_index = i
